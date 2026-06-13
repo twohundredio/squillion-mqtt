@@ -1,0 +1,27 @@
+# Rust build artefacts
+/target/
+
+# Cargo lock is kept for binaries; ignore nothing else from Cargo
+# (Cargo.lock intentionally committed)
+
+# SQLite databases generated at test-time or runtime
+*.sqlite3
+*.sqlite3-shm
+*.sqlite3-wal
+
+# Test data directory contents (databases regenerated on each test run)
+tests/data/
+
+# Editor / OS
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Environment / secrets — never commit these
+.env
+*.pem
+*.key
