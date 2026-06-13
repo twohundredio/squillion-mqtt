@@ -62,10 +62,14 @@ struct SystemConfig {
     #[serde(default = "default_resource")]
     persist_data_store: String,
 
-    /// Maximum MQTT packet size accepted from any client (bytes).
-    /// Packets claiming a remaining-length above this value are rejected before
-    /// the payload bytes are read, preventing pre-auth memory-exhaustion.
-    /// Default: 1 MiB (1_048_576).
+    /// Maximum MQTT packet size (bytes) before the client has authenticated.
+    /// Only needs to cover a CONNECT packet; kept small to limit pre-auth
+    /// memory allocation.  Default: 64 KiB.
+    #[serde(default = "default_max_packet_size_unauthenticated")]
+    max_packet_size_unauthenticated: usize,
+
+    /// Maximum MQTT packet size (bytes) after the client has authenticated.
+    /// Applies to all subsequent packets in the session.  Default: 1 MiB.
     #[serde(default = "default_max_packet_size")]
     max_packet_size: usize,
 
@@ -86,6 +90,10 @@ fn default_resource() -> String {
 
 fn default_bool_false() -> bool {
     false
+}
+
+fn default_max_packet_size_unauthenticated() -> usize {
+    65_536 // 64 KiB — enough for any CONNECT packet
 }
 
 fn default_max_packet_size() -> usize {
@@ -313,8 +321,17 @@ pub fn get_bool(key: &str) -> Option<bool> {
     }
 }
 
-/// Maximum accepted MQTT remaining-length (bytes).  Clients claiming a larger
-/// packet are disconnected before the payload is read.
+/// Packet-size limit applied before a client authenticates (covers only the
+/// CONNECT packet).  Kept small to cap pre-auth memory allocation.
+pub fn get_max_packet_size_unauthenticated() -> usize {
+    GLOBALCONFIG
+        .config
+        .lock()
+        .unwrap()
+        .max_packet_size_unauthenticated
+}
+
+/// Packet-size limit applied after a client has authenticated successfully.
 pub fn get_max_packet_size() -> usize {
     GLOBALCONFIG.config.lock().unwrap().max_packet_size
 }

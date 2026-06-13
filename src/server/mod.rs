@@ -297,12 +297,17 @@ async fn connect_stream<T>(
 ) where
     T: AsyncRead + AsyncWrite + std::marker::Unpin + std::marker::Send,
 {
-    let max_packet_size = config::get_max_packet_size();
-    let framed_stream = Framed::new(stream, MqttCodec::new(logger.clone(), max_packet_size));
+    // Use the smaller pre-auth limit until CONNECT is authenticated, then
+    // switch to the larger post-auth limit for the rest of the session.
+    let pre_auth_limit = config::get_max_packet_size_unauthenticated();
+    let post_auth_limit = config::get_max_packet_size();
+    let framed_stream = Framed::new(stream, MqttCodec::new(logger.clone(), pre_auth_limit));
 
     let client_connect = connect(&logger, framed_stream, src_address, auth_tx).await;
 
-    if let Some((connect_msg, client)) = client_connect {
+    if let Some((connect_msg, mut client)) = client_connect {
+        // Authentication succeeded — raise the codec limit to the post-auth value.
+        client.stream.codec_mut().set_max_packet_size(post_auth_limit);
         let broker_id = client.get_broker_id();
         let logger = logger.new(slog::o!("tenant" => broker_id.tenant_id.clone(),
              "broker" => broker_id.broker_id.clone()));

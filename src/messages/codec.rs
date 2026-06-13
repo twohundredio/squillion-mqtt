@@ -56,6 +56,13 @@ impl MqttCodec {
             max_packet_size,
         }
     }
+
+    /// Switch the active packet-size limit.  Call this once after a client
+    /// has authenticated to raise the limit from the conservative pre-auth
+    /// value to the larger post-auth value.
+    pub fn set_max_packet_size(&mut self, max: usize) {
+        self.max_packet_size = max;
+    }
 }
 
 impl Encoder<MQTTMessage> for MqttCodec {
