@@ -9,6 +9,11 @@ use std::convert::TryFrom;
 use std::io::ErrorKind;
 use validation::{client_id_valid, publish_topic_valid, qos_valid, topic_filter_valid};
 
+/// Common trait for all message types that can be serialised onto the wire.
+pub trait ToBytes {
+    fn to_bytes(&self) -> Vec<u8>;
+}
+
 pub enum MQTTMessageType {
     Connect = 1,
     ConnAck = 2,
@@ -94,7 +99,10 @@ impl MQTTMessageConnack {
         self.session_present = session_present;
     }
 
-    pub fn to_bytes(self) -> Vec<u8> {
+}
+
+impl ToBytes for MQTTMessageConnack {
+    fn to_bytes(&self) -> Vec<u8> {
         // Type, length
         let mut encoded: Vec<u8> = vec![((MQTTMessageType::ConnAck as u8) << 4), 2];
 
@@ -103,7 +111,6 @@ impl MQTTMessageConnack {
             flags |= 1;
         }
         encoded.push(flags);
-
         encoded.push(self.return_code as u8);
 
         encoded
@@ -180,45 +187,6 @@ impl MQTTMessagePublish {
         self.identifier = identifier;
     }
 
-    pub fn to_bytes(&self) -> Vec<u8> {
-        let mut encoded: Vec<u8> = Vec::new();
-
-        let mut flags: u8 = (MQTTMessageType::Publish as u8) << 4;
-        if self.retain {
-            flags |= 1;
-        }
-        let mut id_size = 0;
-        if self.qos > 0 {
-            flags |= self.qos << 1;
-            id_size = 2;
-        }
-        encoded.push(flags);
-
-        let topiclen = self.topic.len();
-
-        let len: usize = topiclen + self.message.len() + id_size + 2;
-        encoded.append(encode_length(len).as_mut());
-
-        // Topic len
-        encoded.push((topiclen << 8) as u8);
-        encoded.push((topiclen & 0xff) as u8);
-
-        // Topic
-        encoded.append(Vec::from(self.topic.as_bytes()).as_mut());
-
-        // Identifier
-        if self.qos > 0 {
-            // Packet ID
-            encoded.push((self.identifier >> 8) as u8);
-            encoded.push((self.identifier & 0xff) as u8);
-        }
-
-        // Message
-        encoded.append(self.message.clone().as_mut());
-
-        encoded
-    }
-
     pub fn from_bytes(&mut self, buf: &[u8]) -> Result<(), std::io::Error> {
         let mut idx: usize = 0;
 
@@ -288,6 +256,46 @@ impl MQTTMessagePublish {
         } else {
             Ok(())
         }
+    }
+}
+
+impl ToBytes for MQTTMessagePublish {
+    fn to_bytes(&self) -> Vec<u8> {
+        let mut encoded: Vec<u8> = Vec::new();
+
+        let mut flags: u8 = (MQTTMessageType::Publish as u8) << 4;
+        if self.retain {
+            flags |= 1;
+        }
+        let mut id_size = 0;
+        if self.qos > 0 {
+            flags |= self.qos << 1;
+            id_size = 2;
+        }
+        encoded.push(flags);
+
+        let topiclen = self.topic.len();
+
+        let len: usize = topiclen + self.message.len() + id_size + 2;
+        encoded.append(encode_length(len).as_mut());
+
+        // Topic length prefix
+        encoded.push((topiclen << 8) as u8);
+        encoded.push((topiclen & 0xff) as u8);
+
+        // Topic
+        encoded.append(Vec::from(self.topic.as_bytes()).as_mut());
+
+        // Packet identifier (QoS > 0 only)
+        if self.qos > 0 {
+            encoded.push((self.identifier >> 8) as u8);
+            encoded.push((self.identifier & 0xff) as u8);
+        }
+
+        // Payload
+        encoded.append(self.message.clone().as_mut());
+
+        encoded
     }
 }
 
@@ -404,8 +412,10 @@ impl MQTTMessageSuback {
     pub fn add_response(&mut self, response: u8) {
         self.response.push(response);
     }
+}
 
-    pub fn to_bytes(&self) -> Vec<u8> {
+impl ToBytes for MQTTMessageSuback {
+    fn to_bytes(&self) -> Vec<u8> {
         let mut encoded: Vec<u8> = vec![((MQTTMessageType::SubAck as u8) << 4)];
 
         // Length
@@ -416,7 +426,7 @@ impl MQTTMessageSuback {
         encoded.push((self.identifier >> 8) as u8);
         encoded.push((self.identifier & 0xff) as u8);
 
-        // Return code
+        // Return codes
         for rc in self.response.iter() {
             encoded.push(*rc);
         }
@@ -432,11 +442,12 @@ impl MQTTMessagePingResp {
     pub fn new() -> MQTTMessagePingResp {
         MQTTMessagePingResp {}
     }
+}
 
-    pub fn to_bytes(self) -> Vec<u8> {
-        // Type, length
-        let encoded: Vec<u8> = vec![((MQTTMessageType::PingResp as u8) << 4), 0];
-        encoded
+impl ToBytes for MQTTMessagePingResp {
+    fn to_bytes(&self) -> Vec<u8> {
+        // Type, length (0 remaining bytes)
+        vec![((MQTTMessageType::PingResp as u8) << 4), 0]
     }
 }
 
@@ -576,17 +587,17 @@ impl MQTTMessageUnsuback {
     pub fn set_identifier(&mut self, id: u16) {
         self.identifier = id;
     }
+}
 
-    pub fn to_bytes(self) -> Vec<u8> {
-        // Type, len, packet id
-        let encoded: Vec<u8> = vec![
+impl ToBytes for MQTTMessageUnsuback {
+    fn to_bytes(&self) -> Vec<u8> {
+        // Type, remaining length (2), packet id
+        vec![
             ((MQTTMessageType::UnsubAck as u8) << 4),
             2,
             ((self.identifier >> 8) as u8),
             ((self.identifier & 0xff) as u8),
-        ];
-
-        encoded
+        ]
     }
 }
 
@@ -817,18 +828,6 @@ impl MQTTMessagePuback {
         self.identifier
     }
 
-    pub fn to_bytes(self) -> Vec<u8> {
-        // Type, len, packet id
-        let encoded: Vec<u8> = vec![
-            ((MQTTMessageType::PubAck as u8) << 4),
-            2,
-            ((self.identifier >> 8) as u8),
-            ((self.identifier & 0xff) as u8),
-        ];
-
-        encoded
-    }
-
     pub fn from_bytes(&mut self, buf: &[u8]) -> Result<(), std::io::Error> {
         let mut idx: usize = 0;
 
@@ -865,6 +864,18 @@ impl MQTTMessagePuback {
     }
 }
 
+impl ToBytes for MQTTMessagePuback {
+    fn to_bytes(&self) -> Vec<u8> {
+        // Type, remaining length (2), packet id
+        vec![
+            ((MQTTMessageType::PubAck as u8) << 4),
+            2,
+            ((self.identifier >> 8) as u8),
+            ((self.identifier & 0xff) as u8),
+        ]
+    }
+}
+
 #[derive(Copy, Clone, Serialize)]
 pub struct MQTTMessagePubrec {
     identifier: u16,
@@ -881,18 +892,6 @@ impl MQTTMessagePubrec {
 
     pub fn get_identifier(&self) -> u16 {
         self.identifier
-    }
-
-    pub fn to_bytes(self) -> Vec<u8> {
-        // Type, len, packet id
-        let encoded: Vec<u8> = vec![
-            ((MQTTMessageType::PubRec as u8) << 4),
-            2,
-            ((self.identifier >> 8) as u8),
-            ((self.identifier & 0xff) as u8),
-        ];
-
-        encoded
     }
 
     pub fn from_bytes(&mut self, buf: &[u8]) -> Result<(), std::io::Error> {
@@ -931,6 +930,18 @@ impl MQTTMessagePubrec {
     }
 }
 
+impl ToBytes for MQTTMessagePubrec {
+    fn to_bytes(&self) -> Vec<u8> {
+        // Type, remaining length (2), packet id
+        vec![
+            ((MQTTMessageType::PubRec as u8) << 4),
+            2,
+            ((self.identifier >> 8) as u8),
+            ((self.identifier & 0xff) as u8),
+        ]
+    }
+}
+
 #[derive(Copy, Clone, PartialEq, Eq)]
 pub struct MQTTMessagePubrel {
     identifier: u16,
@@ -947,19 +958,6 @@ impl MQTTMessagePubrel {
 
     pub fn get_identifier(&self) -> u16 {
         self.identifier
-    }
-
-    pub fn to_bytes(self) -> Vec<u8> {
-        let mut encoded: Vec<u8> = Vec::new();
-        let flags: u8 = 0x2;
-        encoded.push(((MQTTMessageType::PubRel as u8) << 4) | flags);
-        encoded.push(2);
-
-        // Packet ID
-        encoded.push((self.identifier >> 8) as u8);
-        encoded.push((self.identifier & 0xff) as u8);
-
-        encoded
     }
 
     pub fn from_bytes(&mut self, buf: &[u8]) -> Result<(), std::io::Error> {
@@ -998,6 +996,18 @@ impl MQTTMessagePubrel {
     }
 }
 
+impl ToBytes for MQTTMessagePubrel {
+    fn to_bytes(&self) -> Vec<u8> {
+        // PUBREL requires fixed-header flags = 0b0010 per MQTT 3.1.1 §3.6.1
+        vec![
+            ((MQTTMessageType::PubRel as u8) << 4) | 0x2,
+            2,
+            ((self.identifier >> 8) as u8),
+            ((self.identifier & 0xff) as u8),
+        ]
+    }
+}
+
 #[derive(Copy, Clone, PartialEq, Eq)]
 pub struct MQTTMessagePubcomp {
     identifier: u16,
@@ -1014,18 +1024,6 @@ impl MQTTMessagePubcomp {
 
     pub fn get_identifier(&self) -> u16 {
         self.identifier
-    }
-
-    pub fn to_bytes(self) -> Vec<u8> {
-        // Type, len, packet id
-        let encoded: Vec<u8> = vec![
-            ((MQTTMessageType::PubComp as u8) << 4),
-            2,
-            ((self.identifier >> 8) as u8),
-            ((self.identifier & 0xff) as u8),
-        ];
-
-        encoded
     }
 
     pub fn from_bytes(&mut self, buf: &[u8]) -> Result<(), std::io::Error> {
@@ -1061,5 +1059,17 @@ impl MQTTMessagePubcomp {
         } else {
             Ok(())
         }
+    }
+}
+
+impl ToBytes for MQTTMessagePubcomp {
+    fn to_bytes(&self) -> Vec<u8> {
+        // Type, remaining length (2), packet id
+        vec![
+            ((MQTTMessageType::PubComp as u8) << 4),
+            2,
+            ((self.identifier >> 8) as u8),
+            ((self.identifier & 0xff) as u8),
+        ]
     }
 }

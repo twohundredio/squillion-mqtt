@@ -21,6 +21,7 @@ use crate::messages::MQTTMessageSubscribe;
 use crate::messages::MQTTMessageType;
 use crate::messages::MQTTMessageUnsuback;
 use crate::messages::MQTTMessageUnsubscribe;
+use crate::messages::ToBytes;
 
 #[derive(Clone)]
 pub enum MQTTMessage {
@@ -51,57 +52,32 @@ impl MqttCodec {
 }
 
 impl Encoder<MQTTMessage> for MqttCodec {
-    //type Item = MQTTMessage;
     type Error = std::io::Error;
 
     fn encode(&mut self, message: MQTTMessage, buf: &mut BytesMut) -> Result<(), Self::Error> {
-        match message {
-            MQTTMessage::Publish(m) => {
-                let bytes: Vec<u8> = m.to_bytes();
-                buf.reserve(bytes.len());
-                buf.put(Bytes::from(bytes));
+        // Call to_bytes() on each concrete type (monomorphized — enables inlining
+        // and allocation elision for small fixed-size messages on the hot path).
+        // Client→server-only variants are not expected here; they fall through to
+        // the error log.
+        let bytes: Option<Vec<u8>> = match &message {
+            MQTTMessage::Publish(m) => Some(m.to_bytes()),
+            MQTTMessage::ConnAck(m) => Some(m.to_bytes()),
+            MQTTMessage::SubAck(m) => Some(m.to_bytes()),
+            MQTTMessage::UnsubAck(m) => Some(m.to_bytes()),
+            MQTTMessage::PingResp(m) => Some(m.to_bytes()),
+            MQTTMessage::PubAck(m) => Some(m.to_bytes()),
+            MQTTMessage::PubRec(m) => Some(m.to_bytes()),
+            MQTTMessage::PubRel(m) => Some(m.to_bytes()),
+            MQTTMessage::PubComp(m) => Some(m.to_bytes()),
+            _ => None,
+        };
+
+        match bytes {
+            Some(b) => {
+                buf.reserve(b.len());
+                buf.put(Bytes::from(b));
             }
-            MQTTMessage::ConnAck(m) => {
-                let bytes: Vec<u8> = m.to_bytes();
-                buf.reserve(bytes.len());
-                buf.put(Bytes::from(bytes));
-            }
-            MQTTMessage::SubAck(m) => {
-                let bytes: Vec<u8> = m.to_bytes();
-                buf.reserve(bytes.len());
-                buf.put(Bytes::from(bytes));
-            }
-            MQTTMessage::UnsubAck(m) => {
-                let bytes: Vec<u8> = m.to_bytes();
-                buf.reserve(bytes.len());
-                buf.put(Bytes::from(bytes));
-            }
-            MQTTMessage::PingResp(m) => {
-                let bytes: Vec<u8> = m.to_bytes();
-                buf.reserve(bytes.len());
-                buf.put(Bytes::from(bytes));
-            }
-            MQTTMessage::PubAck(m) => {
-                let bytes: Vec<u8> = m.to_bytes();
-                buf.reserve(bytes.len());
-                buf.put(Bytes::from(bytes));
-            }
-            MQTTMessage::PubRec(m) => {
-                let bytes: Vec<u8> = m.to_bytes();
-                buf.reserve(bytes.len());
-                buf.put(Bytes::from(bytes));
-            }
-            MQTTMessage::PubRel(m) => {
-                let bytes: Vec<u8> = m.to_bytes();
-                buf.reserve(bytes.len());
-                buf.put(Bytes::from(bytes));
-            }
-            MQTTMessage::PubComp(m) => {
-                let bytes: Vec<u8> = m.to_bytes();
-                buf.reserve(bytes.len());
-                buf.put(Bytes::from(bytes));
-            }
-            _ => slog::error!(self.logger, "Unknown msg to send"),
+            None => slog::error!(self.logger, "Unknown msg to send"),
         }
 
         Ok(())
@@ -112,143 +88,88 @@ impl Decoder for MqttCodec {
     type Item = MQTTMessage;
     type Error = std::io::Error;
 
-    // Find the next line in buf!
     fn decode(&mut self, buf: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
         if buf.is_empty() {
             return Ok(None);
         }
+
         let msgtype = buf[0] >> 4;
 
-        let mut len;
-        let lensize;
-        if let Ok(length_read) = read_size_check(&buf[1..]) {
-            if let Some((l, ls)) = length_read {
-                len = l;
-                lensize = ls;
-            } else {
-                // More data needed
-                return Ok(None);
+        // Read the variable-length remaining-length field (bytes 1..).
+        let (len, lensize) = match read_size_check(&buf[1..]) {
+            Ok(Some(v)) => v,
+            Ok(None) => return Ok(None), // need more data
+            Err(()) => {
+                slog::warn!(self.logger, "Decoder: Invalid message length");
+                return Err(std::io::Error::new(
+                    ErrorKind::InvalidData,
+                    "Invalid message length",
+                ));
             }
-        } else {
-            slog::warn!(self.logger, "Decoder: Invalid message length");
-            return Err(std::io::Error::new(
-                ErrorKind::Other,
-                "Invalid message length",
-            ));
-        }
+        };
+
         if len > length::MAX_LENGTH {
             slog::warn!(self.logger, "Message exceeds max length");
             return Err(std::io::Error::new(
-                ErrorKind::Other,
+                ErrorKind::InvalidData,
                 "Decoder: Message exceeds max length",
             ));
         }
-        len = len + lensize + 1;
 
-        if buf.capacity() < len {
-            buf.reserve(len - buf.capacity());
+        // Total frame = fixed-header byte (1) + length-field bytes + remaining length.
+        let frame_len = 1 + lensize + len;
+
+        if buf.len() < frame_len {
+            buf.reserve(frame_len - buf.len());
+            return Ok(None);
         }
 
-        if len <= buf.len() {
-            let msg = buf.split_to(len);
+        let msg = buf.split_to(frame_len);
 
-            if msgtype == MQTTMessageType::Connect as u8 {
-                let mut cm = MQTTMessageConnect::new();
+        // Reduce per-type boilerplate: construct, parse, log on error.
+        macro_rules! decode_msg {
+            ($variant:ident, $ty:ty, $name:literal) => {{
+                let mut m = <$ty>::new();
+                match m.from_bytes(&msg) {
+                    Ok(_) => Ok(Some(MQTTMessage::$variant(m))),
+                    Err(err) => {
+                        slog::warn!(self.logger, concat!($name, " decode: {}"), err);
+                        Err(err)
+                    }
+                }
+            }};
+        }
 
-                match cm.from_bytes(&msg) {
-                    Ok(_) => Ok(Some(MQTTMessage::Connect(cm))),
-                    Err(err) => {
-                        slog::warn!(self.logger, "CONNECT decode: {}", err);
-                        Err(err)
-                    }
-                }
-            } else if msgtype == MQTTMessageType::Subscribe as u8 {
-                let mut submsg = MQTTMessageSubscribe::new();
-                match submsg.from_bytes(&msg) {
-                    Ok(_) => Ok(Some(MQTTMessage::Subscribe(submsg))),
-                    Err(err) => {
-                        slog::warn!(self.logger, "SUBSCRIBE decode: {}", err);
-                        Err(err)
-                    }
-                }
-            } else if msgtype == MQTTMessageType::Unsubscribe as u8 {
-                let mut unsubmsg = MQTTMessageUnsubscribe::new();
-                match unsubmsg.from_bytes(&msg) {
-                    Ok(_) => Ok(Some(MQTTMessage::Unsubscribe(unsubmsg))),
-                    Err(err) => {
-                        slog::warn!(self.logger, "UNSUBSCRIBE decode: {}", err);
-                        Err(err)
-                    }
-                }
-            } else if msgtype == MQTTMessageType::Publish as u8 {
-                let mut publishmsg = MQTTMessagePublish::new();
-                match publishmsg.from_bytes(&msg) {
-                    Ok(_) => Ok(Some(MQTTMessage::Publish(publishmsg))),
-                    Err(err) => {
-                        slog::warn!(self.logger, "PUBLISH decode: {}", err);
-                        Err(err)
-                    }
-                }
-            } else if msgtype == MQTTMessageType::PingReq as u8 {
-                let mut pingreqmsg = MQTTMessagePingReq::new();
-                match pingreqmsg.from_bytes(&msg) {
-                    Ok(_) => Ok(Some(MQTTMessage::PingReq(pingreqmsg))),
-                    Err(err) => {
-                        slog::warn!(self.logger, "PINGREQ decode: {}", err);
-                        Err(err)
-                    }
-                }
-            } else if msgtype == MQTTMessageType::PubAck as u8 {
-                let mut pubackmsg = MQTTMessagePuback::new();
-                match pubackmsg.from_bytes(&msg) {
-                    Ok(_) => Ok(Some(MQTTMessage::PubAck(pubackmsg))),
-                    Err(err) => {
-                        slog::warn!(self.logger, "PUBACK decode: {}", err);
-                        Err(err)
-                    }
-                }
-            } else if msgtype == MQTTMessageType::PubRec as u8 {
-                let mut pubrecmsg = MQTTMessagePubrec::new();
-                match pubrecmsg.from_bytes(&msg) {
-                    Ok(_) => Ok(Some(MQTTMessage::PubRec(pubrecmsg))),
-                    Err(err) => {
-                        slog::warn!(self.logger, "PUBREC decode: {}", err);
-                        Err(err)
-                    }
-                }
-            } else if msgtype == MQTTMessageType::PubRel as u8 {
-                let mut pubrelmsg = MQTTMessagePubrel::new();
-                match pubrelmsg.from_bytes(&msg) {
-                    Ok(_) => Ok(Some(MQTTMessage::PubRel(pubrelmsg))),
-                    Err(err) => {
-                        slog::warn!(self.logger, "PUBREL decode: {}", err);
-                        Err(err)
-                    }
-                }
-            } else if msgtype == MQTTMessageType::PubComp as u8 {
-                let mut pubcompmsg = MQTTMessagePubcomp::new();
-                match pubcompmsg.from_bytes(&msg) {
-                    Ok(_) => Ok(Some(MQTTMessage::PubComp(pubcompmsg))),
-                    Err(err) => {
-                        slog::warn!(self.logger, "PUBCOMP decode: {}", err);
-                        Err(err)
-                    }
-                }
-            } else if msgtype == MQTTMessageType::Disconnect as u8 {
+        use std::convert::TryFrom;
+        match MQTTMessageType::try_from(msgtype as i32) {
+            Ok(MQTTMessageType::Connect) => decode_msg!(Connect, MQTTMessageConnect, "CONNECT"),
+            Ok(MQTTMessageType::Subscribe) => {
+                decode_msg!(Subscribe, MQTTMessageSubscribe, "SUBSCRIBE")
+            }
+            Ok(MQTTMessageType::Unsubscribe) => {
+                decode_msg!(Unsubscribe, MQTTMessageUnsubscribe, "UNSUBSCRIBE")
+            }
+            Ok(MQTTMessageType::Publish) => decode_msg!(Publish, MQTTMessagePublish, "PUBLISH"),
+            Ok(MQTTMessageType::PingReq) => decode_msg!(PingReq, MQTTMessagePingReq, "PINGREQ"),
+            Ok(MQTTMessageType::PubAck) => decode_msg!(PubAck, MQTTMessagePuback, "PUBACK"),
+            Ok(MQTTMessageType::PubRec) => decode_msg!(PubRec, MQTTMessagePubrec, "PUBREC"),
+            Ok(MQTTMessageType::PubRel) => decode_msg!(PubRel, MQTTMessagePubrel, "PUBREL"),
+            Ok(MQTTMessageType::PubComp) => decode_msg!(PubComp, MQTTMessagePubcomp, "PUBCOMP"),
+            Ok(MQTTMessageType::Disconnect) => {
                 Ok(Some(MQTTMessage::Disconnect(MQTTMessageDisconnect {})))
-            } else {
+            }
+            // Server→client-only types (ConnAck, SubAck, UnsubAck, PingResp) and
+            // any unknown control-packet type are rejected.
+            Ok(_) | Err(()) => {
                 slog::warn!(self.logger, "Decoder: Unknown msg received");
                 Err(std::io::Error::new(
-                    ErrorKind::Other,
+                    ErrorKind::InvalidData,
                     "Unknown msg received",
                 ))
             }
-        } else {
-            Ok(None)
         }
     }
 
-    // Find the next line in buf when there will be no more data coming.
     fn decode_eof(&mut self, buf: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
         self.decode(buf)
     }
