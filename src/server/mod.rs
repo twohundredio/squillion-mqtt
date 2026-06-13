@@ -11,6 +11,8 @@ use futures::stream::StreamExt;
 
 use futures::SinkExt;
 
+use std::time::Duration;
+
 use tokio::io::AsyncRead;
 use tokio::io::AsyncWrite;
 use tokio::net::TcpListener;
@@ -295,7 +297,8 @@ async fn connect_stream<T>(
 ) where
     T: AsyncRead + AsyncWrite + std::marker::Unpin + std::marker::Send,
 {
-    let framed_stream = Framed::new(stream, MqttCodec::new(logger.clone()));
+    let max_packet_size = config::get_max_packet_size();
+    let framed_stream = Framed::new(stream, MqttCodec::new(logger.clone(), max_packet_size));
 
     let client_connect = connect(&logger, framed_stream, src_address, auth_tx).await;
 
@@ -385,7 +388,21 @@ async fn connect<T>(
 where
     T: AsyncRead + AsyncWrite + std::marker::Unpin,
 {
-    let result = stream.next().await;
+    let timeout_secs = config::get_connect_timeout();
+    let next_frame = tokio::time::timeout(Duration::from_secs(timeout_secs), stream.next());
+
+    let result = match next_frame.await {
+        Ok(r) => r,
+        Err(_elapsed) => {
+            slog::debug!(
+                logger,
+                "Client {} did not send CONNECT within {}s — closing",
+                src_address,
+                timeout_secs,
+            );
+            return None;
+        }
+    };
     match result {
         Some(Ok(message)) => {
             match message {

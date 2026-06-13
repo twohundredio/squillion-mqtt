@@ -62,6 +62,19 @@ struct SystemConfig {
     #[serde(default = "default_resource")]
     persist_data_store: String,
 
+    /// Maximum MQTT packet size accepted from any client (bytes).
+    /// Packets claiming a remaining-length above this value are rejected before
+    /// the payload bytes are read, preventing pre-auth memory-exhaustion.
+    /// Default: 1 MiB (1_048_576).
+    #[serde(default = "default_max_packet_size")]
+    max_packet_size: usize,
+
+    /// Seconds to wait for a CONNECT packet after the TCP/TLS/WS handshake.
+    /// Connections that do not send CONNECT within this window are closed.
+    /// Default: 10 seconds.
+    #[serde(default = "default_connect_timeout")]
+    connect_timeout: u64,
+
     listeners: Vec<ListenerConfig>,
 
     users: Vec<UsersConfig>,
@@ -73,6 +86,14 @@ fn default_resource() -> String {
 
 fn default_bool_false() -> bool {
     false
+}
+
+fn default_max_packet_size() -> usize {
+    1_048_576 // 1 MiB
+}
+
+fn default_connect_timeout() -> u64 {
+    10
 }
 
 struct GlobalConfig {
@@ -287,8 +308,20 @@ pub fn get_string(key: &str) -> Option<String> {
 pub fn get_bool(key: &str) -> Option<bool> {
     match key {
         "logging_remote" => Some(GLOBALCONFIG.config.lock().unwrap().logging_remote),
+        "enable_validation" | "enable_policy" => Some(false), // reserved for OPA/schema integration
         _ => None,
     }
+}
+
+/// Maximum accepted MQTT remaining-length (bytes).  Clients claiming a larger
+/// packet are disconnected before the payload is read.
+pub fn get_max_packet_size() -> usize {
+    GLOBALCONFIG.config.lock().unwrap().max_packet_size
+}
+
+/// Seconds to wait for CONNECT after the transport handshake.
+pub fn get_connect_timeout() -> u64 {
+    GLOBALCONFIG.config.lock().unwrap().connect_timeout
 }
 
 lazy_static! {

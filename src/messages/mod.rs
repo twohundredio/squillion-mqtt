@@ -1,9 +1,10 @@
 pub mod codec;
 mod length;
+mod reader;
 mod validation;
 
 use length::encode_length;
-use length::read_size;
+use reader::Reader;
 use serde::Serialize;
 use std::convert::TryFrom;
 use std::io::ErrorKind;
@@ -98,7 +99,6 @@ impl MQTTMessageConnack {
     pub fn set_session_present(&mut self, session_present: bool) {
         self.session_present = session_present;
     }
-
 }
 
 impl ToBytes for MQTTMessageConnack {
@@ -188,10 +188,12 @@ impl MQTTMessagePublish {
     }
 
     pub fn from_bytes(&mut self, buf: &[u8]) -> Result<(), std::io::Error> {
-        let mut idx: usize = 0;
+        let mut r = Reader::new(buf);
 
-        self.dup = (buf[0] & 0x8) == 0x8;
-        self.qos = (buf[0] & 0x6) >> 1;
+        // Fixed header byte: dup/qos/retain flags
+        let fixed = r.read_u8()?;
+        self.dup = (fixed & 0x8) == 0x8;
+        self.qos = (fixed & 0x6) >> 1;
         if !qos_valid(self.qos) {
             return Err(std::io::Error::new(
                 ErrorKind::Other,
@@ -204,33 +206,28 @@ impl MQTTMessagePublish {
                 "Publish message invalid dup set and qos 0",
             ));
         }
-        self.retain = (buf[0] & 1) == 1;
+        self.retain = (fixed & 1) == 1;
 
-        idx += 1;
+        // Variable-length remaining-length field
+        let (len, _lensize) = r.read_varint()?;
 
-        let (len, lensize) = read_size(&buf[1..]);
-        idx += lensize;
-
-        let topiclen: u16 = ((buf[idx] as u16) << 8) | (buf[idx + 1] as u16);
-        idx += 2;
-
-        let topicstart = idx as usize;
-        let topicend = topicstart + topiclen as usize;
-        let tb = (buf[topicstart..topicend]).to_vec();
+        // Topic (u16-prefixed string)
+        let topiclen = r.read_u16()? as usize;
+        let tb = r.read_bytes(topiclen)?.to_vec();
         if !publish_topic_valid(&tb) {
             return Err(std::io::Error::new(
                 ErrorKind::Other,
                 "Publish message invalid topic",
             ));
         }
-        let topic = String::from_utf8(tb).unwrap();
-        self.topic = topic;
-        idx += topiclen as usize;
+        self.topic = String::from_utf8(tb).map_err(|_| {
+            std::io::Error::new(ErrorKind::InvalidData, "Publish invalid topic UTF-8")
+        })?;
 
-        let mut id_size = 0;
+        // Packet identifier (QoS > 0 only)
+        let id_size: usize;
         if self.qos > 0 {
-            let id: u16 = ((buf[idx] as u16) << 8) | (buf[idx + 1] as u16);
-            idx += 2;
+            let id = r.read_u16()?;
             id_size = 2;
             if id == 0 {
                 return Err(std::io::Error::new(
@@ -239,23 +236,17 @@ impl MQTTMessagePublish {
                 ));
             }
             self.identifier = id;
-        }
-
-        let msglen: u32 = (len as u32) - (topiclen as u32) - (id_size as u32) - 2;
-        let msgstart = idx;
-        let msgend = msgstart + msglen as usize;
-        let message = (buf[msgstart..msgend]).to_vec();
-        self.message = message;
-        idx += msglen as usize;
-
-        if idx != buf.len() {
-            Err(std::io::Error::new(
-                ErrorKind::Other,
-                "Publish message length incorrect",
-            ))
         } else {
-            Ok(())
+            id_size = 0;
         }
+
+        // Payload: everything after topic (+ optional id)
+        let msglen = len.checked_sub(topiclen + id_size + 2).ok_or_else(|| {
+            std::io::Error::new(ErrorKind::InvalidData, "Publish length underflow")
+        })?;
+        self.message = r.read_bytes(msglen)?.to_vec();
+
+        r.expect_end("Publish message length incorrect")
     }
 }
 
@@ -279,8 +270,8 @@ impl ToBytes for MQTTMessagePublish {
         let len: usize = topiclen + self.message.len() + id_size + 2;
         encoded.append(encode_length(len).as_mut());
 
-        // Topic length prefix
-        encoded.push((topiclen << 8) as u8);
+        // Topic length prefix (big-endian u16)
+        encoded.push((topiclen >> 8) as u8);
         encoded.push((topiclen & 0xff) as u8);
 
         // Topic
@@ -322,23 +313,23 @@ impl MQTTMessageSubscribe {
     }
 
     pub fn from_bytes(&mut self, buf: &[u8]) -> Result<(), std::io::Error> {
-        let mut idx: usize = 0;
+        let mut r = Reader::new(buf);
 
-        // Check flags
-        if (buf[idx] & 0xf) != 0x2 {
+        // Fixed header
+        let fixed = r.read_u8()?;
+        if (fixed & 0xf) != 0x2 {
             return Err(std::io::Error::new(
                 ErrorKind::Other,
                 "Subscribe invalid flags",
             ));
         }
-        idx += 1;
 
-        let (mut len, lensize) = read_size(&buf[1..]);
-        idx += lensize;
+        // Remaining-length varint (consumed but we rely on Reader::is_empty
+        // rather than manual countdown to avoid signed-overflow bugs)
+        let (_len, _lensize) = r.read_varint()?;
 
-        let id: u16 = ((buf[idx] as u16) << 8) | (buf[idx + 1] as u16);
-        idx += 2;
-        len -= 2;
+        // Packet identifier
+        let id = r.read_u16()?;
         if id == 0 {
             return Err(std::io::Error::new(
                 ErrorKind::Other,
@@ -347,31 +338,27 @@ impl MQTTMessageSubscribe {
         }
         self.identifier = id;
 
-        while len > 0 {
-            let topic_length: u16 = ((buf[idx] as u16) << 8) | (buf[idx + 1] as u16);
-            idx += 2;
-
-            let topicend: usize = idx + topic_length as usize;
-            let topic_bytes = (buf[idx..topicend]).to_vec();
+        // One or more topic-filter + QoS pairs
+        while !r.is_empty() {
+            let topic_length = r.read_u16()? as usize;
+            let topic_bytes = r.read_bytes(topic_length)?.to_vec();
             if !topic_filter_valid(&topic_bytes) {
                 return Err(std::io::Error::new(
                     ErrorKind::Other,
                     "Subscribe invalid topic",
                 ));
             }
-            let topic = String::from_utf8(topic_bytes).unwrap();
-            idx += topic_length as usize;
+            let topic = String::from_utf8(topic_bytes).map_err(|_| {
+                std::io::Error::new(ErrorKind::InvalidData, "Subscribe invalid topic UTF-8")
+            })?;
 
-            let qos = buf[idx as usize];
-            idx += 1;
+            let qos = r.read_u8()?;
             if !qos_valid(qos) {
                 return Err(std::io::Error::new(
                     ErrorKind::Other,
                     "Subscribe invalid qos",
                 ));
             }
-
-            len = len - 3 - topic_length as usize;
 
             self.topics.push((topic, qos));
         }
@@ -380,14 +367,7 @@ impl MQTTMessageSubscribe {
             return Err(std::io::Error::new(ErrorKind::Other, "Subscribe no topics"));
         }
 
-        if idx != buf.len() {
-            Err(std::io::Error::new(
-                ErrorKind::Other,
-                "Subscribe message length incorrect",
-            ))
-        } else {
-            Ok(())
-        }
+        Ok(())
     }
 }
 
@@ -460,28 +440,21 @@ impl MQTTMessagePingReq {
     }
 
     pub fn from_bytes(&mut self, buf: &[u8]) -> Result<(), std::io::Error> {
-        let mut idx: usize = 0;
+        let mut r = Reader::new(buf);
 
-        // Check flags
-        if (buf[idx] & 0xf) != 0x0 {
+        // Fixed header
+        let fixed = r.read_u8()?;
+        if (fixed & 0xf) != 0x0 {
             return Err(std::io::Error::new(
                 ErrorKind::Other,
                 "Pingreq invalid flags",
             ));
         }
-        idx += 1;
 
-        let (_len, lensize) = read_size(&buf[1..]);
-        idx += lensize;
+        // Remaining-length varint (must encode 0 for a valid PINGREQ)
+        let (_len, _lensize) = r.read_varint()?;
 
-        if idx != buf.len() {
-            Err(std::io::Error::new(
-                ErrorKind::Other,
-                "Pingreq message length incorrect",
-            ))
-        } else {
-            Ok(())
-        }
+        r.expect_end("Pingreq message length incorrect")
     }
 }
 
@@ -517,42 +490,37 @@ impl MQTTMessageUnsubscribe {
     }
 
     pub fn from_bytes(&mut self, buf: &[u8]) -> Result<(), std::io::Error> {
-        let mut idx: usize = 0;
+        let mut r = Reader::new(buf);
 
-        // Check flags
-        if (buf[idx] & 0xf) != 0x2 {
+        // Fixed header
+        let fixed = r.read_u8()?;
+        if (fixed & 0xf) != 0x2 {
             return Err(std::io::Error::new(
                 ErrorKind::Other,
                 "Unsubscribe invalid flags",
             ));
         }
-        idx += 1;
 
-        let (mut len, lensize) = read_size(&buf[1..]);
-        idx += lensize;
+        // Remaining-length varint
+        let (_len, _lensize) = r.read_varint()?;
 
-        let id: u16 = ((buf[idx] as u16) << 8) | (buf[idx + 1] as u16);
-        idx += 2;
-        len -= 2;
+        // Packet identifier
+        let id = r.read_u16()?;
         self.identifier = id;
 
-        while len > 0 {
-            let topic_length: u16 = ((buf[idx] as u16) << 8) | (buf[idx + 1] as u16);
-            idx += 2;
-
-            let topicend: usize = idx + topic_length as usize;
-            let topic_bytes = (buf[idx..topicend]).to_vec();
+        // One or more topic filters
+        while !r.is_empty() {
+            let topic_length = r.read_u16()? as usize;
+            let topic_bytes = r.read_bytes(topic_length)?.to_vec();
             if !topic_filter_valid(&topic_bytes) {
                 return Err(std::io::Error::new(
                     ErrorKind::Other,
                     "Unsubscribe invalid topic",
                 ));
             }
-            let topic = String::from_utf8(topic_bytes).unwrap();
-            idx += topic_length as usize;
-
-            len = len - 2 - topic_length as usize;
-
+            let topic = String::from_utf8(topic_bytes).map_err(|_| {
+                std::io::Error::new(ErrorKind::InvalidData, "Unsubscribe invalid topic UTF-8")
+            })?;
             self.topics.push(topic);
         }
 
@@ -563,14 +531,7 @@ impl MQTTMessageUnsubscribe {
             ));
         }
 
-        if idx != buf.len() {
-            Err(std::io::Error::new(
-                ErrorKind::Other,
-                "Unsubscribe message length incorrect",
-            ))
-        } else {
-            Ok(())
-        }
+        Ok(())
     }
 }
 
@@ -678,55 +639,53 @@ impl MQTTMessageConnect {
     }
 
     pub fn from_bytes(&mut self, buf: &[u8]) -> Result<(), std::io::Error> {
-        let mut idx: usize = 0;
+        let mut r = Reader::new(buf);
 
-        let flags = buf[idx] & 0x0F;
-        if flags != 0 {
+        // Fixed header: type (Connect=1) in top 4 bits, flags must be 0
+        let fixed = r.read_u8()?;
+        if (fixed & 0x0F) != 0 {
             return Err(std::io::Error::new(
                 ErrorKind::Other,
                 "Connect invalid header flags",
             ));
         }
-        idx += 1;
 
-        let (_len, lensize) = read_size(&buf[1..]);
-        idx += lensize;
+        // Remaining-length varint
+        let (_len, _lensize) = r.read_varint()?;
 
-        // Skip header
-        idx += 6;
+        // Protocol name: 2-byte length + "MQTT" (4 bytes) = 6 bytes total
+        r.skip(6)?;
 
-        let version = buf[idx];
-        self.version = version;
-        idx += 1;
+        // Protocol version
+        self.version = r.read_u8()?;
 
-        let flags = buf[idx];
-        idx += 1;
-
-        // Clean session
-        if flags & 0x02 == 0x02 {
-            self.clean_session = true;
+        // Connect flags
+        let flags = r.read_u8()?;
+        if flags & 0x01 == 0x01 {
+            return Err(std::io::Error::new(
+                ErrorKind::Other,
+                "Connect message invalid flags",
+            ));
         }
+        self.clean_session = (flags & 0x02) == 0x02;
 
-        // Keep alive
-        let keepalive = ((buf[idx] as u16) << 8) | (buf[idx + 1] as u16);
-        self.keepalive = keepalive;
-        idx += 2;
+        // Keep-alive (seconds)
+        self.keepalive = r.read_u16()?;
 
         // Client ID
-        let client_len = ((buf[idx] as usize) << 8) | (buf[idx + 1] as usize);
-        idx += 2;
-        let client_id_bytes = (buf[idx..idx + client_len]).to_vec();
+        let client_len = r.read_u16()? as usize;
+        let client_id_bytes = r.read_bytes(client_len)?.to_vec();
         if !client_id_valid(&client_id_bytes) {
             return Err(std::io::Error::new(
                 ErrorKind::Other,
                 "Connect message invalid client id",
             ));
         }
-        let client = String::from_utf8(client_id_bytes).unwrap();
-        self.client = client;
-        idx += client_len;
+        self.client = String::from_utf8(client_id_bytes).map_err(|_| {
+            std::io::Error::new(ErrorKind::InvalidData, "Connect client id invalid UTF-8")
+        })?;
 
-        // Will flag
+        // Will
         let willretain = (flags & 0x20) == 0x20;
         let willqos = (flags & 0x18) >> 3;
         if flags & 0x04 == 0x04 {
@@ -737,33 +696,27 @@ impl MQTTMessageConnect {
                     "Connect message invalid qos",
                 ));
             }
-
             self.willqos = willqos;
             self.willretain = willretain;
 
-            let willtopic_len = ((buf[idx] as usize) << 8) | (buf[idx + 1] as usize);
-            idx += 2;
-
-            let willtopicbytes = (buf[idx..idx + willtopic_len]).to_vec();
+            let willtopic_len = r.read_u16()? as usize;
+            let willtopicbytes = r.read_bytes(willtopic_len)?.to_vec();
             if !publish_topic_valid(&willtopicbytes) {
                 return Err(std::io::Error::new(
                     ErrorKind::Other,
                     "Connect message invalid will topic",
                 ));
             }
-            let willtopic = String::from_utf8(willtopicbytes).unwrap();
-            self.willtopic = willtopic;
+            self.willtopic = String::from_utf8(willtopicbytes).map_err(|_| {
+                std::io::Error::new(ErrorKind::InvalidData, "Connect will topic invalid UTF-8")
+            })?;
 
-            idx += willtopic_len;
-
-            let willmsg_len = ((buf[idx] as usize) << 8) | (buf[idx + 1] as usize);
-            idx += 2;
-
-            let willmsg = String::from_utf8((buf[idx..idx + willmsg_len]).to_vec()).unwrap();
-            self.willmsg = willmsg;
-
-            idx += willmsg_len;
-        } else if (willqos != 0) || willretain {
+            let willmsg_len = r.read_u16()? as usize;
+            let willmsg_bytes = r.read_bytes(willmsg_len)?;
+            self.willmsg = String::from_utf8(willmsg_bytes.to_vec()).map_err(|_| {
+                std::io::Error::new(ErrorKind::InvalidData, "Connect will message invalid UTF-8")
+            })?;
+        } else if willqos != 0 || willretain {
             return Err(std::io::Error::new(
                 ErrorKind::Other,
                 "Connect message invalid will flags",
@@ -772,41 +725,15 @@ impl MQTTMessageConnect {
 
         // Username
         if flags & 0x80 == 0x80 {
-            let username_len = ((buf[idx] as usize) << 8) | (buf[idx + 1] as usize);
-            idx += 2;
-
-            let username = String::from_utf8((buf[idx..idx + username_len]).to_vec()).unwrap();
-            self.username = username;
-
-            idx += username_len;
+            self.username = r.read_mqtt_string_prefixed()?;
         }
 
         // Password
         if flags & 0x40 == 0x40 {
-            let password_len = ((buf[idx] as usize) << 8) | (buf[idx + 1] as usize);
-            idx += 2;
-
-            let password = String::from_utf8((buf[idx..idx + password_len]).to_vec()).unwrap();
-            self.password = password;
-
-            idx += password_len;
+            self.password = r.read_mqtt_string_prefixed()?;
         }
 
-        if flags & 0x01 == 0x01 {
-            return Err(std::io::Error::new(
-                ErrorKind::Other,
-                "Connect message invalid flags",
-            ));
-        }
-
-        if idx != buf.len() {
-            Err(std::io::Error::new(
-                ErrorKind::Other,
-                "Connect message length incorrect",
-            ))
-        } else {
-            Ok(())
-        }
+        r.expect_end("Connect message length incorrect")
     }
 }
 
@@ -829,19 +756,17 @@ impl MQTTMessagePuback {
     }
 
     pub fn from_bytes(&mut self, buf: &[u8]) -> Result<(), std::io::Error> {
-        let mut idx: usize = 0;
+        let mut r = Reader::new(buf);
 
-        // Check flags
-        if (buf[idx] & 0xf) != 0x0 {
+        let fixed = r.read_u8()?;
+        if (fixed & 0xf) != 0x0 {
             return Err(std::io::Error::new(
                 ErrorKind::Other,
                 "Puback invalid flags",
             ));
         }
-        idx += 1;
 
-        let (len, lensize) = read_size(&buf[1..]);
-        idx += lensize;
+        let (len, _lensize) = r.read_varint()?;
         if len != 2 {
             return Err(std::io::Error::new(
                 ErrorKind::Other,
@@ -849,18 +774,8 @@ impl MQTTMessagePuback {
             ));
         }
 
-        let id: u16 = ((buf[idx] as u16) << 8) | (buf[idx + 1] as u16);
-        idx += 2;
-        self.identifier = id;
-
-        if idx != buf.len() {
-            Err(std::io::Error::new(
-                ErrorKind::Other,
-                "Puback message length incorrect",
-            ))
-        } else {
-            Ok(())
-        }
+        self.identifier = r.read_u16()?;
+        r.expect_end("Puback message length incorrect")
     }
 }
 
@@ -895,19 +810,17 @@ impl MQTTMessagePubrec {
     }
 
     pub fn from_bytes(&mut self, buf: &[u8]) -> Result<(), std::io::Error> {
-        let mut idx: usize = 0;
+        let mut r = Reader::new(buf);
 
-        // Check flags
-        if (buf[idx] & 0xf) != 0x0 {
+        let fixed = r.read_u8()?;
+        if (fixed & 0xf) != 0x0 {
             return Err(std::io::Error::new(
                 ErrorKind::Other,
                 "Pubrec invalid flags",
             ));
         }
-        idx += 1;
 
-        let (len, lensize) = read_size(&buf[1..]);
-        idx += lensize;
+        let (len, _lensize) = r.read_varint()?;
         if len != 2 {
             return Err(std::io::Error::new(
                 ErrorKind::Other,
@@ -915,18 +828,8 @@ impl MQTTMessagePubrec {
             ));
         }
 
-        let id: u16 = ((buf[idx] as u16) << 8) | (buf[idx + 1] as u16);
-        idx += 2;
-        self.identifier = id;
-
-        if idx != buf.len() {
-            Err(std::io::Error::new(
-                ErrorKind::Other,
-                "Pubrec message length incorrect",
-            ))
-        } else {
-            Ok(())
-        }
+        self.identifier = r.read_u16()?;
+        r.expect_end("Pubrec message length incorrect")
     }
 }
 
@@ -961,19 +864,17 @@ impl MQTTMessagePubrel {
     }
 
     pub fn from_bytes(&mut self, buf: &[u8]) -> Result<(), std::io::Error> {
-        let mut idx: usize = 0;
+        let mut r = Reader::new(buf);
 
-        // Check flags
-        if (buf[idx] & 0xf) != 0x2 {
+        let fixed = r.read_u8()?;
+        if (fixed & 0xf) != 0x2 {
             return Err(std::io::Error::new(
                 ErrorKind::Other,
                 "Pubrel invalid flags",
             ));
         }
-        idx += 1;
 
-        let (len, lensize) = read_size(&buf[1..]);
-        idx += lensize;
+        let (len, _lensize) = r.read_varint()?;
         if len != 2 {
             return Err(std::io::Error::new(
                 ErrorKind::Other,
@@ -981,18 +882,8 @@ impl MQTTMessagePubrel {
             ));
         }
 
-        let id: u16 = ((buf[idx] as u16) << 8) | (buf[idx + 1] as u16);
-        idx += 2;
-        self.identifier = id;
-
-        if idx != buf.len() {
-            Err(std::io::Error::new(
-                ErrorKind::Other,
-                "Pubrel message length incorrect",
-            ))
-        } else {
-            Ok(())
-        }
+        self.identifier = r.read_u16()?;
+        r.expect_end("Pubrel message length incorrect")
     }
 }
 
@@ -1027,19 +918,17 @@ impl MQTTMessagePubcomp {
     }
 
     pub fn from_bytes(&mut self, buf: &[u8]) -> Result<(), std::io::Error> {
-        let mut idx: usize = 0;
+        let mut r = Reader::new(buf);
 
-        // Check flags
-        if (buf[idx] & 0xf) != 0x0 {
+        let fixed = r.read_u8()?;
+        if (fixed & 0xf) != 0x0 {
             return Err(std::io::Error::new(
                 ErrorKind::Other,
                 "Pubcomp invalid flags",
             ));
         }
-        idx += 1;
 
-        let (len, lensize) = read_size(&buf[1..]);
-        idx += lensize;
+        let (len, _lensize) = r.read_varint()?;
         if len != 2 {
             return Err(std::io::Error::new(
                 ErrorKind::Other,
@@ -1047,18 +936,8 @@ impl MQTTMessagePubcomp {
             ));
         }
 
-        let id: u16 = ((buf[idx] as u16) << 8) | (buf[idx + 1] as u16);
-        idx += 2;
-        self.identifier = id;
-
-        if idx != buf.len() {
-            Err(std::io::Error::new(
-                ErrorKind::Other,
-                "Pubcomp message length incorrect",
-            ))
-        } else {
-            Ok(())
-        }
+        self.identifier = r.read_u16()?;
+        r.expect_end("Pubcomp message length incorrect")
     }
 }
 
