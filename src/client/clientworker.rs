@@ -116,8 +116,7 @@ where
     }
 
     fn load_settings(&mut self) {
-        self.settings.validation =
-            config::get_bool("enable_validation").unwrap_or_default();
+        self.settings.validation = config::get_bool("enable_validation").unwrap_or_default();
 
         self.settings.policy = config::get_bool("enable_policy").unwrap_or_default();
     }

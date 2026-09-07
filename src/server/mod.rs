@@ -307,7 +307,10 @@ async fn connect_stream<T>(
 
     if let Some((connect_msg, mut client)) = client_connect {
         // Authentication succeeded — raise the codec limit to the post-auth value.
-        client.stream.codec_mut().set_max_packet_size(post_auth_limit);
+        client
+            .stream
+            .codec_mut()
+            .set_max_packet_size(post_auth_limit);
         let broker_id = client.get_broker_id();
         let logger = logger.new(slog::o!("tenant" => broker_id.tenant_id.clone(),
              "broker" => broker_id.broker_id.clone()));

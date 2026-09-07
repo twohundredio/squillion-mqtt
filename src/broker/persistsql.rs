@@ -102,7 +102,9 @@ impl PersistTopicSQL {
         if let Ok(client) = &self.pool.get().await {
             match client
                 .interact(move |client| {
-                    client.query_row("SELECT * FROM version", [], |row| row.get::<_, u32>(0)).ok()
+                    client
+                        .query_row("SELECT * FROM version", [], |row| row.get::<_, u32>(0))
+                        .ok()
                 })
                 .await
             {

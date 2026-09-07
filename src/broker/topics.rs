@@ -384,7 +384,7 @@ impl Subscriptions {
 
         for level in t {
             tm = match tm {
-                Some(entry) => entry.topics.get_mut(&level.to_string()),
+                Some(entry) => entry.topics.get_mut(level),
                 None => None,
             };
         }
@@ -416,7 +416,7 @@ impl Subscriptions {
 
         for level in t {
             tm = match tm {
-                Some(entry) => entry.topics.get_mut(&level.to_string()),
+                Some(entry) => entry.topics.get_mut(level),
                 None => None,
             };
         }
@@ -462,7 +462,7 @@ impl Subscriptions {
                     nexttopics.push(entry);
                 };
 
-                if let Some(entry) = tm.topics.get(&level.to_string()) {
+                if let Some(entry) = tm.topics.get(level) {
                     nexttopics.push(entry);
                 }
             }
