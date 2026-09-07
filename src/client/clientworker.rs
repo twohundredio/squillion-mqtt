@@ -117,17 +117,9 @@ where
 
     fn load_settings(&mut self) {
         self.settings.validation =
-            if let Some(enable_validation) = config::get_bool("enable_validation") {
-                enable_validation
-            } else {
-                false
-            };
+            config::get_bool("enable_validation").unwrap_or_default();
 
-        self.settings.policy = if let Some(enable_policy) = config::get_bool("enable_policy") {
-            enable_policy
-        } else {
-            false
-        };
+        self.settings.policy = config::get_bool("enable_policy").unwrap_or_default();
     }
 
     pub async fn run_loop(&mut self) {

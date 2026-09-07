@@ -913,7 +913,7 @@ impl MQTTSession {
     async fn unsubscribe_all(&mut self) -> Result<(), SessionError> {
         let mut topics: Vec<String> = Vec::new();
 
-        for (topic, _) in self.subscriptions.iter() {
+        for topic in self.subscriptions.keys() {
             topics.push(topic.to_string());
         }
         self.unsubscribe(&topics).await?;

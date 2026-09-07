@@ -113,14 +113,14 @@ impl MqttServer {
 fn create_tls_identity(tlscrt: Option<String>, tlskey: Option<String>) -> Result<Identity, String> {
     const PASSWORD: &str = "nosecret";
 
-    let mut server_cert_file = File::open(&tlscrt.unwrap()).map_err(|f| format!("Error: {}", f))?;
+    let mut server_cert_file = File::open(tlscrt.unwrap()).map_err(|f| format!("Error: {}", f))?;
     let mut server_cert = vec![];
     server_cert_file
         .read_to_end(&mut server_cert)
         .map_err(|f| format!("Error: {}", f))?;
     let cert = openssl::x509::X509::from_pem(&server_cert).map_err(|f| format!("Error: {}", f))?;
 
-    let mut server_key_file = File::open(&tlskey.unwrap()).map_err(|f| format!("Error: {}", f))?;
+    let mut server_key_file = File::open(tlskey.unwrap()).map_err(|f| format!("Error: {}", f))?;
     let mut server_key = vec![];
     server_key_file
         .read_to_end(&mut server_key)

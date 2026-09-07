@@ -231,7 +231,7 @@ async fn get_secret(secret: &str) -> Result<String, String> {
 }
 
 async fn load_secrets(settings: &mut BTreeMap<String, String>) -> Result<(), String> {
-    for (_key, value) in settings.iter_mut() {
+    for value in settings.values_mut() {
         if let Some(secret) = value.strip_prefix("secret:") {
             match get_secret(secret).await {
                 Ok(secret_value) => {

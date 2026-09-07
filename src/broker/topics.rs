@@ -454,7 +454,7 @@ impl Subscriptions {
 
             for tm in &topicmatchs {
                 if let Some(entry) = tm.topics.get("#") {
-                    for (_c, s) in entry.clients.iter() {
+                    for s in entry.clients.values() {
                         clients.insert(s.session.clone(), s.qos);
                     }
                 };
@@ -474,7 +474,7 @@ impl Subscriptions {
         }
 
         for tm in &topicmatchs {
-            for (_c, s) in tm.clients.iter() {
+            for s in tm.clients.values() {
                 clients.insert(s.session.clone(), s.qos);
             }
         }

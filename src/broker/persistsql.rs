@@ -88,7 +88,7 @@ impl PersistTopicSQL {
 
         client
             .interact(move |client| {
-                client.execute_batch(&query).map_err(|result| {
+                client.execute_batch(query).map_err(|result| {
                     BrokerError::PersistError(format!("Error creating database: {:?}", result))
                 })?;
 
@@ -102,13 +102,7 @@ impl PersistTopicSQL {
         if let Ok(client) = &self.pool.get().await {
             match client
                 .interact(move |client| {
-                    if let Ok(value) =
-                        client.query_row("SELECT * FROM version", [], |row| row.get::<_, u32>(0))
-                    {
-                        Some(value)
-                    } else {
-                        None
-                    }
+                    client.query_row("SELECT * FROM version", [], |row| row.get::<_, u32>(0)).ok()
                 })
                 .await
             {
@@ -133,7 +127,7 @@ impl PersistProvider for PersistTopicSQL {
             None => {
                 self.create_db().await?;
             }
-            Some(val) => {
+            Some(_val) => {
                 return Err(BrokerError::PersistError(
                     "Unknown database version".to_owned(),
                 ));
@@ -257,7 +251,7 @@ impl PersistProvider for PersistTopicSQL {
                     )
                     .map_err(|err| BrokerError::PersistError(format!("{:}", err)))?;
 
-                 let rows = stmt.query_map(&[&topic_id], |row| {
+                 let rows = stmt.query_map([&topic_id], |row| {
                     Ok((
                         row.get::<_, i32>(0),
                         row.get::<_, std::string::String>(1),
@@ -368,7 +362,7 @@ impl PersistProvider for PersistTopicSQL {
                     },
                 ) {
                     Ok(_) => Ok(true),
-                    Err(reason) => Err(BrokerError::PersistError(
+                    Err(_reason) => Err(BrokerError::PersistError(
                         "Persist subscribe failed".to_owned(),
                     )),
                 }
@@ -400,7 +394,7 @@ impl PersistProvider for PersistTopicSQL {
                     },
                 ) {
                     Ok(_) => Ok(true),
-                    Err(reason) => Err(BrokerError::PersistError(
+                    Err(_reason) => Err(BrokerError::PersistError(
                         "Update subscribe failed".to_owned(),
                     )),
                 }
@@ -430,7 +424,7 @@ impl PersistProvider for PersistTopicSQL {
                     },
                 ) {
                     Ok(_) => Ok(true),
-                    Err(reason) => Err(BrokerError::PersistError("Unsubscribe failed".to_owned())),
+                    Err(_reason) => Err(BrokerError::PersistError("Unsubscribe failed".to_owned())),
                 }
             })
             .await
@@ -540,11 +534,11 @@ impl PersistProvider for PersistTopicSQL {
                         )
                     })?;
 
-                    return Ok(());
+                    Ok(())
                 } else {
-                    return Err(BrokerError::PersistError(
+                    Err(BrokerError::PersistError(
                         "Delete retained message unable to start transaction".to_owned(),
-                    ));
+                    ))
                 }
             })
             .await

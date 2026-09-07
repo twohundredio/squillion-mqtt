@@ -5,7 +5,7 @@ struct UTF8Iterator<'a> {
 }
 
 impl<'a> UTF8Iterator<'a> {
-    fn new(string: &[u8]) -> UTF8Iterator {
+    fn new(string: &[u8]) -> UTF8Iterator<'_> {
         UTF8Iterator {
             index: 0,
             length: string.len(),

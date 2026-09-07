@@ -195,14 +195,12 @@ impl MQTTMessagePublish {
         self.dup = (fixed & 0x8) == 0x8;
         self.qos = (fixed & 0x6) >> 1;
         if !qos_valid(self.qos) {
-            return Err(std::io::Error::new(
-                ErrorKind::Other,
+            return Err(std::io::Error::other(
                 "Publish message invalid qos",
             ));
         }
         if self.dup && self.qos == 0 {
-            return Err(std::io::Error::new(
-                ErrorKind::Other,
+            return Err(std::io::Error::other(
                 "Publish message invalid dup set and qos 0",
             ));
         }
@@ -215,8 +213,7 @@ impl MQTTMessagePublish {
         let topiclen = r.read_u16()? as usize;
         let tb = r.read_bytes(topiclen)?.to_vec();
         if !publish_topic_valid(&tb) {
-            return Err(std::io::Error::new(
-                ErrorKind::Other,
+            return Err(std::io::Error::other(
                 "Publish message invalid topic",
             ));
         }
@@ -230,8 +227,7 @@ impl MQTTMessagePublish {
             let id = r.read_u16()?;
             id_size = 2;
             if id == 0 {
-                return Err(std::io::Error::new(
-                    ErrorKind::Other,
+                return Err(std::io::Error::other(
                     "Publish zero identifier",
                 ));
             }
@@ -318,8 +314,7 @@ impl MQTTMessageSubscribe {
         // Fixed header
         let fixed = r.read_u8()?;
         if (fixed & 0xf) != 0x2 {
-            return Err(std::io::Error::new(
-                ErrorKind::Other,
+            return Err(std::io::Error::other(
                 "Subscribe invalid flags",
             ));
         }
@@ -331,8 +326,7 @@ impl MQTTMessageSubscribe {
         // Packet identifier
         let id = r.read_u16()?;
         if id == 0 {
-            return Err(std::io::Error::new(
-                ErrorKind::Other,
+            return Err(std::io::Error::other(
                 "Subscribe zero identifier",
             ));
         }
@@ -343,8 +337,7 @@ impl MQTTMessageSubscribe {
             let topic_length = r.read_u16()? as usize;
             let topic_bytes = r.read_bytes(topic_length)?.to_vec();
             if !topic_filter_valid(&topic_bytes) {
-                return Err(std::io::Error::new(
-                    ErrorKind::Other,
+                return Err(std::io::Error::other(
                     "Subscribe invalid topic",
                 ));
             }
@@ -354,8 +347,7 @@ impl MQTTMessageSubscribe {
 
             let qos = r.read_u8()?;
             if !qos_valid(qos) {
-                return Err(std::io::Error::new(
-                    ErrorKind::Other,
+                return Err(std::io::Error::other(
                     "Subscribe invalid qos",
                 ));
             }
@@ -364,7 +356,7 @@ impl MQTTMessageSubscribe {
         }
 
         if self.topics.is_empty() {
-            return Err(std::io::Error::new(ErrorKind::Other, "Subscribe no topics"));
+            return Err(std::io::Error::other("Subscribe no topics"));
         }
 
         Ok(())
@@ -445,8 +437,7 @@ impl MQTTMessagePingReq {
         // Fixed header
         let fixed = r.read_u8()?;
         if (fixed & 0xf) != 0x0 {
-            return Err(std::io::Error::new(
-                ErrorKind::Other,
+            return Err(std::io::Error::other(
                 "Pingreq invalid flags",
             ));
         }
@@ -495,8 +486,7 @@ impl MQTTMessageUnsubscribe {
         // Fixed header
         let fixed = r.read_u8()?;
         if (fixed & 0xf) != 0x2 {
-            return Err(std::io::Error::new(
-                ErrorKind::Other,
+            return Err(std::io::Error::other(
                 "Unsubscribe invalid flags",
             ));
         }
@@ -513,8 +503,7 @@ impl MQTTMessageUnsubscribe {
             let topic_length = r.read_u16()? as usize;
             let topic_bytes = r.read_bytes(topic_length)?.to_vec();
             if !topic_filter_valid(&topic_bytes) {
-                return Err(std::io::Error::new(
-                    ErrorKind::Other,
+                return Err(std::io::Error::other(
                     "Unsubscribe invalid topic",
                 ));
             }
@@ -525,8 +514,7 @@ impl MQTTMessageUnsubscribe {
         }
 
         if self.topics.is_empty() {
-            return Err(std::io::Error::new(
-                ErrorKind::Other,
+            return Err(std::io::Error::other(
                 "Unsubscribe no topics",
             ));
         }
@@ -644,8 +632,7 @@ impl MQTTMessageConnect {
         // Fixed header: type (Connect=1) in top 4 bits, flags must be 0
         let fixed = r.read_u8()?;
         if (fixed & 0x0F) != 0 {
-            return Err(std::io::Error::new(
-                ErrorKind::Other,
+            return Err(std::io::Error::other(
                 "Connect invalid header flags",
             ));
         }
@@ -662,8 +649,7 @@ impl MQTTMessageConnect {
         // Connect flags
         let flags = r.read_u8()?;
         if flags & 0x01 == 0x01 {
-            return Err(std::io::Error::new(
-                ErrorKind::Other,
+            return Err(std::io::Error::other(
                 "Connect message invalid flags",
             ));
         }
@@ -676,8 +662,7 @@ impl MQTTMessageConnect {
         let client_len = r.read_u16()? as usize;
         let client_id_bytes = r.read_bytes(client_len)?.to_vec();
         if !client_id_valid(&client_id_bytes) {
-            return Err(std::io::Error::new(
-                ErrorKind::Other,
+            return Err(std::io::Error::other(
                 "Connect message invalid client id",
             ));
         }
@@ -691,8 +676,7 @@ impl MQTTMessageConnect {
         if flags & 0x04 == 0x04 {
             self.will = true;
             if !qos_valid(willqos) {
-                return Err(std::io::Error::new(
-                    ErrorKind::Other,
+                return Err(std::io::Error::other(
                     "Connect message invalid qos",
                 ));
             }
@@ -702,8 +686,7 @@ impl MQTTMessageConnect {
             let willtopic_len = r.read_u16()? as usize;
             let willtopicbytes = r.read_bytes(willtopic_len)?.to_vec();
             if !publish_topic_valid(&willtopicbytes) {
-                return Err(std::io::Error::new(
-                    ErrorKind::Other,
+                return Err(std::io::Error::other(
                     "Connect message invalid will topic",
                 ));
             }
@@ -717,8 +700,7 @@ impl MQTTMessageConnect {
                 std::io::Error::new(ErrorKind::InvalidData, "Connect will message invalid UTF-8")
             })?;
         } else if willqos != 0 || willretain {
-            return Err(std::io::Error::new(
-                ErrorKind::Other,
+            return Err(std::io::Error::other(
                 "Connect message invalid will flags",
             ));
         }
@@ -760,16 +742,14 @@ impl MQTTMessagePuback {
 
         let fixed = r.read_u8()?;
         if (fixed & 0xf) != 0x0 {
-            return Err(std::io::Error::new(
-                ErrorKind::Other,
+            return Err(std::io::Error::other(
                 "Puback invalid flags",
             ));
         }
 
         let (len, _lensize) = r.read_varint()?;
         if len != 2 {
-            return Err(std::io::Error::new(
-                ErrorKind::Other,
+            return Err(std::io::Error::other(
                 "Puback invalid length",
             ));
         }
@@ -814,16 +794,14 @@ impl MQTTMessagePubrec {
 
         let fixed = r.read_u8()?;
         if (fixed & 0xf) != 0x0 {
-            return Err(std::io::Error::new(
-                ErrorKind::Other,
+            return Err(std::io::Error::other(
                 "Pubrec invalid flags",
             ));
         }
 
         let (len, _lensize) = r.read_varint()?;
         if len != 2 {
-            return Err(std::io::Error::new(
-                ErrorKind::Other,
+            return Err(std::io::Error::other(
                 "Pubrec invalid length",
             ));
         }
@@ -868,16 +846,14 @@ impl MQTTMessagePubrel {
 
         let fixed = r.read_u8()?;
         if (fixed & 0xf) != 0x2 {
-            return Err(std::io::Error::new(
-                ErrorKind::Other,
+            return Err(std::io::Error::other(
                 "Pubrel invalid flags",
             ));
         }
 
         let (len, _lensize) = r.read_varint()?;
         if len != 2 {
-            return Err(std::io::Error::new(
-                ErrorKind::Other,
+            return Err(std::io::Error::other(
                 "Pubrel invalid length",
             ));
         }
@@ -922,16 +898,14 @@ impl MQTTMessagePubcomp {
 
         let fixed = r.read_u8()?;
         if (fixed & 0xf) != 0x0 {
-            return Err(std::io::Error::new(
-                ErrorKind::Other,
+            return Err(std::io::Error::other(
                 "Pubcomp invalid flags",
             ));
         }
 
         let (len, _lensize) = r.read_varint()?;
         if len != 2 {
-            return Err(std::io::Error::new(
-                ErrorKind::Other,
+            return Err(std::io::Error::other(
                 "Pubcomp invalid length",
             ));
         }
