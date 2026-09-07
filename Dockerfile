@@ -6,7 +6,9 @@ RUN cargo build --release
 
 FROM debian:bookworm as production-stage
 ARG DEBIAN_FRONTEND=noninteractive
-RUN apt update && apt-get --yes install libsqlite3-0 libssl3 && apt clean
+RUN apt update && apt-get --yes --no-install-recommends install libsqlite3-0 libssl3 \
+ && apt-get clean \
+ && rm -rf /var/lib/apt/lists/*
 RUN groupadd -r mqtt && useradd -r -g mqtt -d /opt/mqtt -s /usr/sbin/nologin mqtt
 RUN mkdir -p /opt/mqtt/cert
 RUN mkdir -p /opt/mqtt/bin
