@@ -49,7 +49,7 @@ use server::MqttServer;
 async fn main() {
     if let Ok(mut signals) = Signals::new([SIGINT, SIGTERM]) {
         thread::spawn(move || {
-            for sig in signals.forever() {
+            if let Some(sig) = signals.forever().next() {
                 println!("Received signal {:?}", sig);
                 std::process::exit(0);
             }
