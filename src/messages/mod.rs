@@ -535,7 +535,7 @@ pub struct MQTTMessageConnect {
     password: String,
     will: bool,
     willtopic: String,
-    willmsg: String,
+    willmsg: Vec<u8>,
     willqos: u8,
     willretain: bool,
     version: u8,
@@ -551,7 +551,7 @@ impl MQTTMessageConnect {
             password: String::new(),
             will: false,
             willtopic: String::new(),
-            willmsg: String::new(),
+            willmsg: Vec::new(),
             willqos: 0,
             willretain: false,
             version: 0,
@@ -584,7 +584,7 @@ impl MQTTMessageConnect {
         &self.willtopic
     }
 
-    pub fn will_message(&self) -> &String {
+    pub fn will_message(&self) -> &Vec<u8> {
         &self.willmsg
     }
 
@@ -663,10 +663,7 @@ impl MQTTMessageConnect {
             })?;
 
             let willmsg_len = r.read_u16()? as usize;
-            let willmsg_bytes = r.read_bytes(willmsg_len)?;
-            self.willmsg = String::from_utf8(willmsg_bytes.to_vec()).map_err(|_| {
-                std::io::Error::new(ErrorKind::InvalidData, "Connect will message invalid UTF-8")
-            })?;
+            self.willmsg = r.read_bytes(willmsg_len)?.to_vec();
         } else if willqos != 0 || willretain {
             return Err(std::io::Error::other("Connect message invalid will flags"));
         }

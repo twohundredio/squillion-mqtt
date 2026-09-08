@@ -11,11 +11,11 @@ pub struct WillMessage {
     topic: String,
     qos: u8,
     retain: bool,
-    message: String,
+    message: Vec<u8>,
 }
 
 impl WillMessage {
-    pub fn new(topic: String, message: String, qos: u8, retain: bool) -> WillMessage {
+    pub fn new(topic: String, message: Vec<u8>, qos: u8, retain: bool) -> WillMessage {
         WillMessage {
             topic,
             qos,
@@ -24,7 +24,7 @@ impl WillMessage {
         }
     }
 
-    pub fn get_message(&self) -> &String {
+    pub fn get_message(&self) -> &Vec<u8> {
         &self.message
     }
 

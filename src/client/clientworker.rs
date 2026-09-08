@@ -450,7 +450,7 @@ where
         if let Some(will) = self.client.get_will() {
             let mut msg = MQTTMessagePublish::new();
             msg.set_topic(will.get_topic().clone());
-            msg.set_message(will.get_message().clone().as_bytes().to_vec());
+            msg.set_message(will.get_message().clone());
             msg.set_retain(will.get_retain());
             msg.set_qos(will.get_qos());
 
