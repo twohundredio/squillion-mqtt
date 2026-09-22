@@ -11,22 +11,25 @@ tokio-stream = { version = "0.1.12", features = ["net"] }
 bytes="1.4.0"
 futures="0.3.27"
 futures-util="0.3.21"
-rust-crypto = "0.2.36"
+sha1 = "0.10"
 base64 = "0.21.0"
 rand="0.8.5"
 log="0.4.17"
 env_logger="0.10.0"
-prometheus = "0.13.3"
-hyper = { version = "0.14.25", features = ["server"] }
+prometheus = "0.14.0"
+hyper = { version = "1", features = ["http1", "http2", "server"] }
+hyper-util = { version = "0.1", features = ["http1", "http2", "server", "tokio"] }
+http-body-util = "0.1"
 lazy_static = "1.4.0"
 tokio-tungstenite = "0.18.0"
 signal-hook = "0.3.15"
-reqwest = { version = "0.11.14", features = ["json"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls-no-provider"] }
 serde = { version = "1.0.158", features = ["derive"] }
 serde_json = "1.0.94"
 serde_yaml = "0.9.19"
-native-tls = "0.2.11"
-tokio-native-tls = "0.3.1"
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
+rustls-pki-types = "1"
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring"] }
 slog = "2.7.0"
 slog-async = "2.7.0"
 slog-term = "2.9.0"
@@ -37,6 +40,5 @@ async-trait = "0.1.67"
 tokio-test="0.4.2"
 ws_stream_tungstenite = { version = "0.8.0", features = ["tokio_io"] }
 async-tungstenite = { version = "0.17.2", features =  ["tokio-runtime", "async-std-runtime"] }
-openssl = "0.10.52"
 deadpool = "0.9.5"
 deadpool-sqlite = "0.5.0"
