@@ -3,8 +3,7 @@ use std::collections::HashMap;
 use std::fs;
 
 use base64::{engine::general_purpose, Engine as _};
-use crypto::digest::Digest;
-use crypto::sha1::Sha1;
+use sha1::{Digest, Sha1};
 
 use crate::auth::AuthProvider;
 use crate::config;
@@ -13,13 +12,8 @@ use crate::messages::ReturnCode;
 use super::AuthResponse;
 
 fn check_sha_password(password: &str, hash: &str) -> bool {
-    let mut m = Sha1::new();
-    let mut out: [u8; 20] = [0; 20];
-
-    m.input_str(password);
-    m.result(&mut out);
-
-    general_purpose::STANDARD.encode(out).eq(hash)
+    let digest = Sha1::digest(password.as_bytes());
+    general_purpose::STANDARD.encode(digest).eq(hash)
 }
 
 pub struct PasswordAuth {

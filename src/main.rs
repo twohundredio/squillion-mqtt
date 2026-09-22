@@ -1,6 +1,5 @@
 extern crate base64;
 extern crate bytes;
-extern crate crypto;
 extern crate rand;
 extern crate tokio;
 extern crate tokio_util;

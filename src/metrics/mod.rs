@@ -1,13 +1,22 @@
+use bytes::Bytes;
+use http_body_util::Full;
+use hyper::body::Incoming;
 use hyper::header::CONTENT_TYPE;
-use hyper::service::{make_service_fn, service_fn};
-use hyper::{server::Server, Body, Request, Response, StatusCode};
+use hyper::service::service_fn;
+use hyper::{Request, Response, StatusCode};
+use hyper_util::rt::{TokioExecutor, TokioIo};
+use hyper_util::server::conn::auto::Builder;
 use std::convert::Infallible;
+use std::net::SocketAddr;
+use tokio::net::TcpListener;
 
 use prometheus::{Encoder, TextEncoder};
 
 use crate::config;
 
-async fn metrics(_req: Request<Body>) -> Result<Response<Body>, Infallible> {
+type ResponseBody = Full<Bytes>;
+
+async fn metrics(_req: Request<Incoming>) -> Result<Response<ResponseBody>, Infallible> {
     let metric_families = prometheus::gather();
     let mut buffer = vec![];
 
@@ -17,44 +26,44 @@ async fn metrics(_req: Request<Body>) -> Result<Response<Body>, Infallible> {
     let response = Response::builder()
         .status(200)
         .header(CONTENT_TYPE, encoder.format_type())
-        .body(Body::from(buffer))
+        .body(Full::new(Bytes::from(buffer)))
         .unwrap();
 
     Ok(response)
 }
 
-async fn livez(_req: Request<Body>) -> Result<Response<Body>, Infallible> {
+async fn livez(_req: Request<Incoming>) -> Result<Response<ResponseBody>, Infallible> {
     let status = if config::get_livez() { 200 } else { 500 };
 
     let response = hyper::Response::builder()
         .status(status)
-        .body("livez".into())
+        .body(Full::new(Bytes::from_static(b"livez")))
         .unwrap();
 
     Ok(response)
 }
 
-async fn readyz(_req: Request<Body>) -> Result<Response<Body>, Infallible> {
+async fn readyz(_req: Request<Incoming>) -> Result<Response<ResponseBody>, Infallible> {
     let status = if config::get_readyz() { 200 } else { 500 };
 
     let response = hyper::Response::builder()
         .status(status)
-        .body("readyz".into())
+        .body(Full::new(Bytes::from_static(b"readyz")))
         .unwrap();
 
     Ok(response)
 }
 
-async fn not_found_handler(_req: Request<Body>) -> Result<Response<Body>, Infallible> {
+async fn not_found_handler(_req: Request<Incoming>) -> Result<Response<ResponseBody>, Infallible> {
     let response = hyper::Response::builder()
         .status(StatusCode::NOT_FOUND)
-        .body("NOT FOUND".into())
+        .body(Full::new(Bytes::from_static(b"NOT FOUND")))
         .unwrap();
 
     Ok(response)
 }
 
-async fn route(req: Request<Body>) -> Result<Response<Body>, Infallible> {
+async fn route(req: Request<Incoming>) -> Result<Response<ResponseBody>, Infallible> {
     if req.uri() == "/metrics" {
         metrics(req).await
     } else if req.uri() == "/livez" {
@@ -69,19 +78,36 @@ async fn route(req: Request<Body>) -> Result<Response<Body>, Infallible> {
 }
 
 pub async fn serve(logger: slog::Logger) {
-    let addr = ([0, 0, 0, 0], 9898).into();
+    let addr: SocketAddr = ([0, 0, 0, 0], 9898).into();
 
     slog::info!(logger, "Metrics listening address: {:?}", addr);
 
-    let make_svc = make_service_fn(|_conn| async {
-        // service_fn converts our function into a `Service`
-        Ok::<_, Infallible>(service_fn(route))
-    });
+    let listener = match TcpListener::bind(addr).await {
+        Ok(listener) => listener,
+        Err(e) => {
+            slog::error!(logger, "metrics server bind error: {}", e);
+            return;
+        }
+    };
 
-    let server = Server::bind(&addr).serve(make_svc);
-
-    // Run this server for... forever!
-    if let Err(e) = server.await {
-        slog::error!(logger, "metrics server error: {}", e);
+    loop {
+        let (stream, _) = match listener.accept().await {
+            Ok(connection) => connection,
+            Err(e) => {
+                slog::error!(logger, "metrics server accept error: {}", e);
+                continue;
+            }
+        };
+        let logger = logger.clone();
+        tokio::spawn(async move {
+            let io = TokioIo::new(stream);
+            let service = service_fn(route);
+            if let Err(e) = Builder::new(TokioExecutor::new())
+                .serve_connection(io, service)
+                .await
+            {
+                slog::error!(logger, "metrics connection error: {}", e);
+            }
+        });
     }
 }

@@ -1,7 +1,5 @@
 use std::collections::hash_map::Entry::{Occupied, Vacant};
 use std::collections::HashMap;
-use std::fs::File;
-use std::io::Read;
 use std::sync::Arc;
 use std::sync::Mutex;
 
@@ -19,7 +17,9 @@ use tokio::net::TcpListener;
 use tokio_stream::wrappers::TcpListenerStream;
 use tokio_util::codec::Framed;
 
-use native_tls::{Identity, TlsAcceptor};
+use rustls::ServerConfig;
+use rustls_pki_types::{pem::PemObject, CertificateDer, PrivateKeyDer};
+use tokio_rustls::TlsAcceptor;
 use ws_stream_tungstenite::*;
 
 use crate::messages;
@@ -110,34 +110,24 @@ impl MqttServer {
     }
 }
 
-fn create_tls_identity(tlscrt: Option<String>, tlskey: Option<String>) -> Result<Identity, String> {
-    const PASSWORD: &str = "nosecret";
+fn create_tls_config(
+    tlscrt: Option<String>,
+    tlskey: Option<String>,
+) -> Result<Arc<ServerConfig>, String> {
+    let certificate_path = tlscrt.ok_or("TLS certificate path is missing")?;
+    let key_path = tlskey.ok_or("TLS private key path is missing")?;
+    let certificates = CertificateDer::pem_file_iter(certificate_path)
+        .map_err(|f| format!("Error reading TLS certificate: {}", f))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|f| format!("Error parsing TLS certificate: {}", f))?;
+    let private_key = PrivateKeyDer::from_pem_file(key_path)
+        .map_err(|f| format!("Error reading TLS private key: {}", f))?;
 
-    let mut server_cert_file = File::open(tlscrt.unwrap()).map_err(|f| format!("Error: {}", f))?;
-    let mut server_cert = vec![];
-    server_cert_file
-        .read_to_end(&mut server_cert)
-        .map_err(|f| format!("Error: {}", f))?;
-    let cert = openssl::x509::X509::from_pem(&server_cert).map_err(|f| format!("Error: {}", f))?;
-
-    let mut server_key_file = File::open(tlskey.unwrap()).map_err(|f| format!("Error: {}", f))?;
-    let mut server_key = vec![];
-    server_key_file
-        .read_to_end(&mut server_key)
-        .map_err(|f| format!("Error: {}", f))?;
-    let key = openssl::rsa::Rsa::private_key_from_pem(&server_key)
-        .map_err(|f| format!("Error: {}", f))?;
-    let pkey = openssl::pkey::PKey::from_rsa(key).map_err(|f| format!("Error: {}", f))?;
-
-    let pkcs12 = openssl::pkcs12::Pkcs12::builder()
-        .build(PASSWORD, "", &*pkey, &cert)
-        .map_err(|f| format!("Error: {}", f))?;
-
-    // The DER-encoded bytes of the archive
-    let der = pkcs12.to_der().map_err(|f| format!("Error: {}", f))?;
-    let identity = Identity::from_pkcs12(&der, PASSWORD).map_err(|f| format!("Error: {}", f))?;
-
-    Ok(identity)
+    ServerConfig::builder()
+        .with_no_client_auth()
+        .with_single_cert(certificates, private_key)
+        .map(Arc::new)
+        .map_err(|f| format!("Error configuring TLS: {}", f))
 }
 
 pub async fn create_listener(
@@ -156,10 +146,9 @@ pub async fn create_listener(
 
     // TLS identity
     if tls {
-        match create_tls_identity(listener_config.tlscrt, listener_config.tlskey) {
-            Ok(identity) => {
-                let acceptor = TlsAcceptor::new(identity).unwrap();
-                tls_acceptor = Some(tokio_native_tls::TlsAcceptor::from(acceptor));
+        match create_tls_config(listener_config.tlscrt, listener_config.tlskey) {
+            Ok(config) => {
+                tls_acceptor = Some(TlsAcceptor::from(config));
             }
             Err(err) => {
                 slog::error!(listen_logger, "Error loading tls: {}", err);
